@@ -1,0 +1,31 @@
+{
+	"name": "pi-extension-squad",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Squad extension for pi - spawn background agents as subprocesses",
+	"scripts": {
+		"clean": "echo 'nothing to clean'",
+		"build": "echo 'nothing to build'",
+		"check": "tsc --noEmit",
+		"test": "tsx --test",
+		"lint": "biome lint .",
+		"format": "biome format --write .",
+		"biome": "biome check --write ."
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.6",
+		"@mariozechner/pi-ai": "^0.57.1",
+		"@mariozechner/pi-coding-agent": "^0.57.1",
+		"@mariozechner/pi-tui": "^0.57.1",
+		"@sinclair/typebox": "^0.34.48",
+		"@types/node": "^25.4.0",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	}
+}
