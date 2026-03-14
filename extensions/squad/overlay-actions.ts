@@ -10,7 +10,7 @@ import type { TUI } from "@mariozechner/pi-tui";
 /**
  * Current view mode for the overlay.
  */
-export type SquadViewMode = "list" | "detail" | "output" | "sessions";
+export type SquadViewMode = "list" | "detail" | "output" | "sessions" | "chat";
 
 /**
  * Input mode for the overlay.
@@ -65,6 +65,18 @@ export interface SquadViewState {
 
 	/** Focused panel index in sessions grid view */
 	sessionsFocusIndex: number;
+
+	/** Scroll offset for chat view */
+	chatScroll: number;
+
+	/** Auto-scroll to bottom in chat view */
+	chatAutoScroll: boolean;
+
+	/** Chat message input text */
+	chatInput: string;
+
+	/** Whether chat input is focused */
+	chatInputFocused: boolean;
 }
 
 /**
@@ -84,6 +96,10 @@ export function createSquadViewState(): SquadViewState {
 		notificationTimer: null,
 		feedFocus: false,
 		sessionsFocusIndex: 0,
+		chatScroll: 0,
+		chatAutoScroll: true,
+		chatInput: "",
+		chatInputFocused: false,
 	};
 }
 

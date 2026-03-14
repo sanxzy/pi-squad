@@ -12,6 +12,7 @@ import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui"
 import type { MemberStatus, SquadManager } from "./manager";
 import { createSquadViewState, type SquadViewState, setNotification } from "./overlay-actions";
 import {
+	renderMemberChat,
 	renderMemberDetail,
 	renderMemberList,
 	renderMemberOutput,
@@ -41,6 +42,8 @@ export interface SquadOverlayCallbacks {
 	onDispatch?: (role: string | "all", prompt: string) => void;
 	/** Called when user aborts a member from the overlay */
 	onAbort?: (role: string | "all") => void;
+	/** Called when user sends a chat message from the overlay */
+	onMessage?: (role: string, message: string) => void;
 }
 
 /**
@@ -56,6 +59,7 @@ export class SquadOverlay implements Component, Focusable {
 		private tui: TUI,
 		private theme: Theme,
 		private manager: SquadManager,
+		private cwd: string,
 		private done: (snapshot?: string) => void,
 		private callbacks: SquadOverlayCallbacks,
 	) {
@@ -132,6 +136,9 @@ export class SquadOverlay implements Component, Focusable {
 		} else if (this.viewState.mode === "output" && selectedMember) {
 			// Full output view for a member
 			contentLines = renderMemberOutput(this.theme, selectedMember, sectionW, contentHeight, this.viewState);
+		} else if (this.viewState.mode === "chat" && selectedMember) {
+			// Chat view for a member
+			contentLines = renderMemberChat(this.theme, selectedMember, this.cwd, sectionW, contentHeight, this.viewState);
 		} else if (this.viewState.mode === "detail" && selectedMember) {
 			// Detail view: config, progress, partial output
 			contentLines = renderMemberDetail(this.theme, selectedMember, sectionW, contentHeight, this.viewState);
@@ -162,6 +169,12 @@ export class SquadOverlay implements Component, Focusable {
 		// ── Confirmation mode ──
 		if (this.viewState.confirmAction) {
 			this.handleConfirmInput(data);
+			return;
+		}
+
+		// ── Chat input mode ──
+		if (this.viewState.chatInputFocused) {
+			this.handleChatInput(data);
 			return;
 		}
 
@@ -304,6 +317,17 @@ export class SquadOverlay implements Component, Focusable {
 			return;
 		}
 
+		// c: open chat view for selected member
+		if (matchesKey(data, "c") && members.length > 0) {
+			this.viewState.mode = "chat";
+			this.viewState.chatScroll = 0;
+			this.viewState.chatAutoScroll = true;
+			this.viewState.chatInputFocused = false;
+			this.viewState.chatInput = "";
+			this.tui.requestRender();
+			return;
+		}
+
 		// ── Actions ──
 
 		// p: enter prompt input mode (dispatch to selected or all)
@@ -378,6 +402,28 @@ export class SquadOverlay implements Component, Focusable {
 			}
 			if (matchesKey(data, "right") || matchesKey(data, "]")) {
 				this.viewState.detailScroll++;
+				this.tui.requestRender();
+				return;
+			}
+		}
+
+		// scroll in chat mode
+		if (this.viewState.mode === "chat") {
+			if (matchesKey(data, "up")) {
+				this.viewState.chatScroll = Math.max(0, this.viewState.chatScroll - 1);
+				this.viewState.chatAutoScroll = false;
+				this.tui.requestRender();
+				return;
+			}
+			if (matchesKey(data, "down")) {
+				this.viewState.chatScroll++;
+				this.viewState.chatAutoScroll = true;
+				this.tui.requestRender();
+				return;
+			}
+			if (matchesKey(data, "i")) {
+				this.viewState.chatInputFocused = true;
+				this.viewState.chatInput = "";
 				this.tui.requestRender();
 				return;
 			}
@@ -486,6 +532,47 @@ export class SquadOverlay implements Component, Focusable {
 		// Printable characters
 		if (data.length > 0 && data.charCodeAt(0) >= 32) {
 			this.viewState.promptInput += data;
+			this.tui.requestRender();
+		}
+	}
+
+	private handleChatInput(data: string): void {
+		if (matchesKey(data, "escape")) {
+			this.viewState.chatInputFocused = false;
+			this.viewState.chatInput = "";
+			this.tui.requestRender();
+			return;
+		}
+
+		if (matchesKey(data, "enter")) {
+			const raw = this.viewState.chatInput.trim();
+			if (!raw) return;
+
+			const members = Array.from(this.manager.getMembers().values());
+			const member = members[this.viewState.selectedIndex];
+			if (member) {
+				this.callbacks.onMessage?.(member.config.role, raw);
+				setNotification(this.viewState, this.tui, true, `Message sent to ${member.config.name}`);
+			}
+
+			this.viewState.chatInputFocused = false;
+			this.viewState.chatInput = "";
+			this.viewState.chatAutoScroll = true;
+			this.tui.requestRender();
+			return;
+		}
+
+		if (matchesKey(data, "backspace")) {
+			if (this.viewState.chatInput.length > 0) {
+				this.viewState.chatInput = this.viewState.chatInput.slice(0, -1);
+				this.tui.requestRender();
+			}
+			return;
+		}
+
+		// Printable characters
+		if (data.length > 0 && data.charCodeAt(0) >= 32) {
+			this.viewState.chatInput += data;
 			this.tui.requestRender();
 		}
 	}

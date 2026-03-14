@@ -10,6 +10,8 @@
  * - Legend/footer
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { MemberStatus, SquadManager, SquadMemberInstance } from "./manager";
@@ -505,6 +507,252 @@ export function renderMemberOutput(
 	return lines.slice(0, height);
 }
 
+// ── Member Chat View (WhatsApp-style) ───────────────────
+
+interface ChatMessage {
+	id: string;
+	from: string;
+	to: string;
+	content: string;
+	timestamp: string;
+	status: "read" | "unread";
+	direction: "incoming" | "outgoing";
+}
+
+function loadChatMessages(cwd: string, memberRole: string): ChatMessage[] {
+	const messagesFile = join(cwd, ".pi", "messenger", memberRole, "messages.jsonl");
+	if (!existsSync(messagesFile)) return [];
+
+	const content = readFileSync(messagesFile, "utf-8");
+	const lines = content.split("\n").filter((line) => line.trim());
+	const messages: ChatMessage[] = [];
+
+	for (const line of lines) {
+		try {
+			const parsed = JSON.parse(line);
+			if (parsed.id && parsed.from && parsed.to && parsed.content && parsed.timestamp) {
+				messages.push(parsed as ChatMessage);
+			}
+		} catch {
+			continue;
+		}
+	}
+
+	return messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+}
+
+function formatChatTime(timestamp: string): string {
+	const d = new Date(timestamp);
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function wrapText(text: string, maxWidth: number): string[] {
+	const result: string[] = [];
+	for (const paragraph of text.split("\n")) {
+		if (paragraph.length === 0) {
+			result.push("");
+			continue;
+		}
+		let remaining = paragraph;
+		while (remaining.length > maxWidth) {
+			let breakPoint = remaining.lastIndexOf(" ", maxWidth);
+			if (breakPoint <= 0) breakPoint = maxWidth;
+			result.push(remaining.slice(0, breakPoint));
+			remaining = remaining.slice(breakPoint).trimStart();
+		}
+		if (remaining.length > 0) result.push(remaining);
+	}
+	return result;
+}
+
+export function renderMemberChat(
+	theme: Theme,
+	member: SquadMemberInstance,
+	cwd: string,
+	width: number,
+	height: number,
+	viewState: SquadViewState,
+): string[] {
+	const lines: string[] = [];
+	const memberRole = member.config.role;
+	const memberName = member.config.name;
+
+	// ── Chat Header ──
+	const headerContent = ` 💬 ${theme.fg("accent", memberName)} ${theme.fg("dim", `(${memberRole})`)} `;
+	const headerW = visibleWidth(headerContent);
+	const headerFill = Math.max(0, width - headerW - 4);
+	lines.push(
+		theme.fg("accent", "┏━") +
+			headerContent +
+			theme.fg("accent", "━".repeat(headerFill)) +
+			theme.fg("accent", "━┓"),
+	);
+
+	// ── Input area (bottom 3 lines reserved) ──
+	const inputHeight = viewState.chatInputFocused ? 3 : 1;
+	const chatAreaHeight = height - 2 - inputHeight; // header + separator + input
+
+	// ── Load messages ──
+	const messages = loadChatMessages(cwd, memberRole);
+
+	if (messages.length === 0) {
+		// Empty state
+		const emptyLines: string[] = [];
+		emptyLines.push("");
+		emptyLines.push(theme.fg("dim", "  No messages yet."));
+		emptyLines.push(theme.fg("dim", `  Press 'i' to start chatting with ${memberName}`));
+		emptyLines.push("");
+
+		while (emptyLines.length < chatAreaHeight) emptyLines.push("");
+		for (const el of emptyLines.slice(0, chatAreaHeight)) {
+			const elW = visibleWidth(el);
+			const elPad = " ".repeat(Math.max(0, width - elW - 2));
+			lines.push(theme.fg("accent", "┃") + el + elPad + theme.fg("accent", "┃"));
+		}
+	} else {
+		// ── Render chat bubbles ──
+		const bubbleLines: string[] = [];
+		const maxBubbleW = Math.min(Math.floor(width * 0.7), width - 12);
+		let lastDate = "";
+
+		for (const msg of messages) {
+			// Date separator
+			const msgDate = new Date(msg.timestamp).toLocaleDateString();
+			if (msgDate !== lastDate) {
+				lastDate = msgDate;
+				const dateSep = ` ${msgDate} `;
+				const datePadL = Math.floor((width - 4 - dateSep.length) / 2);
+				const datePadR = width - 4 - dateSep.length - datePadL;
+				bubbleLines.push(
+					theme.fg("dim", "─".repeat(Math.max(0, datePadL))) +
+						theme.fg("dim", dateSep) +
+						theme.fg("dim", "─".repeat(Math.max(0, datePadR))),
+				);
+			}
+
+			const isOutgoing = msg.direction === "outgoing";
+			const time = formatChatTime(msg.timestamp);
+			const statusIcon = msg.status === "read" ? "✓✓" : "✓";
+			const senderLabel = isOutgoing
+				? theme.fg("accent", memberName)
+				: theme.fg("success", msg.from);
+
+			// Wrap message content
+			const contentLines = wrapText(msg.content, maxBubbleW - 2);
+
+			// Build bubble
+			const bubbleW = Math.min(
+				maxBubbleW,
+				Math.max(...contentLines.map((l) => l.length), 20) + 2,
+			);
+
+			// Bubble top + sender
+			const topBorder = isOutgoing ? "╭" + "─".repeat(bubbleW) + "╮" : "╭" + "─".repeat(bubbleW) + "╮";
+			const senderLine = `│ ${senderLabel}`;
+			const senderPad = " ".repeat(Math.max(0, bubbleW - visibleWidth(senderLine) + 1));
+
+			if (isOutgoing) {
+				// Right-aligned
+				const indent = Math.max(0, width - 4 - bubbleW - 2);
+				bubbleLines.push(" ".repeat(indent) + theme.fg("accent", topBorder));
+				bubbleLines.push(" ".repeat(indent) + theme.fg("accent", senderLine) + senderPad + theme.fg("accent", "│"));
+			} else {
+				// Left-aligned
+				bubbleLines.push(theme.fg("success", topBorder));
+				bubbleLines.push(theme.fg("success", senderLine) + senderPad + theme.fg("success", "│"));
+			}
+
+			// Content lines
+			for (const cl of contentLines) {
+				const clTrunc = truncateToWidth(cl, bubbleW - 2);
+				const clW = visibleWidth(clTrunc);
+				const clPad = " ".repeat(Math.max(0, bubbleW - clW - 2));
+				const lineContent = `│ ${clTrunc}${clPad} │`;
+				if (isOutgoing) {
+					const indent = Math.max(0, width - 4 - bubbleW - 2);
+					bubbleLines.push(" ".repeat(indent) + theme.fg("accent", lineContent));
+				} else {
+					bubbleLines.push(theme.fg("success", lineContent));
+				}
+			}
+
+			// Bottom border with time
+			const timeStr = `${time} ${isOutgoing ? statusIcon : ""}`.trim();
+			const timePad = Math.max(0, bubbleW - timeStr.length - 1);
+			const bottomBorder = `╰${"─".repeat(Math.max(0, timePad))}${theme.fg("dim", timeStr)}╯`;
+			if (isOutgoing) {
+				const indent = Math.max(0, width - 4 - bubbleW - 2);
+				bubbleLines.push(" ".repeat(indent) + theme.fg("accent", bottomBorder));
+			} else {
+				bubbleLines.push(theme.fg("success", bottomBorder));
+			}
+
+			bubbleLines.push(""); // spacing between bubbles
+		}
+
+		// Auto-scroll
+		const maxScroll = Math.max(0, bubbleLines.length - chatAreaHeight);
+		if (viewState.chatAutoScroll) {
+			viewState.chatScroll = maxScroll;
+		}
+		viewState.chatScroll = Math.max(0, Math.min(viewState.chatScroll, maxScroll));
+
+		// Render visible lines with scroll indicator
+		const visibleBubbles = bubbleLines.slice(viewState.chatScroll, viewState.chatScroll + chatAreaHeight);
+		while (visibleBubbles.length < chatAreaHeight) visibleBubbles.push("");
+
+		for (let i = 0; i < visibleBubbles.length; i++) {
+			const bl = visibleBubbles[i]!;
+			const blW = visibleWidth(bl);
+			const blPad = " ".repeat(Math.max(0, width - blW - 4));
+
+			// Scroll indicator
+			let scrollChar = " ";
+			if (bubbleLines.length > chatAreaHeight) {
+				const scrollPos = bubbleLines.length > 0 ? (viewState.chatScroll + i) / bubbleLines.length : 0;
+				const thumbPos = Math.floor(scrollPos * chatAreaHeight);
+				const thumbSize = Math.max(1, Math.floor((chatAreaHeight / bubbleLines.length) * chatAreaHeight));
+				if (i >= thumbPos && i < thumbPos + thumbSize) {
+					scrollChar = theme.fg("accent", "▐");
+				} else {
+					scrollChar = theme.fg("dim", "░");
+				}
+			}
+
+			lines.push(theme.fg("accent", "┃") + " " + bl + blPad + scrollChar + theme.fg("accent", "┃"));
+		}
+	}
+
+	// ── Input separator ──
+	lines.push(theme.fg("accent", "┠") + theme.fg("dim", "─".repeat(width - 2)) + theme.fg("accent", "┨"));
+
+	// ── Input area ──
+	if (viewState.chatInputFocused) {
+		const cursor = theme.fg("accent", "█");
+		const inputText = viewState.chatInput || "";
+		const inputDisplay = truncateToWidth(inputText, width - 8);
+		const promptLine = `  ${theme.fg("accent", "❯")} ${inputDisplay}${cursor}`;
+		const promptW = visibleWidth(promptLine);
+		const promptPad = " ".repeat(Math.max(0, width - promptW - 2));
+		lines.push(theme.fg("accent", "┃") + promptLine + promptPad + theme.fg("accent", "┃"));
+
+		const hintLine = theme.fg("dim", "  Enter:Send  Esc:Cancel");
+		const hintW = visibleWidth(hintLine);
+		const hintPad = " ".repeat(Math.max(0, width - hintW - 2));
+		lines.push(theme.fg("accent", "┃") + hintLine + hintPad + theme.fg("accent", "┃"));
+	} else {
+		const hintLine = theme.fg("dim", "  Press 'i' to type a message");
+		const hintW = visibleWidth(hintLine);
+		const hintPad = " ".repeat(Math.max(0, width - hintW - 2));
+		lines.push(theme.fg("accent", "┃") + hintLine + hintPad + theme.fg("accent", "┃"));
+	}
+
+	// ── Bottom border ──
+	lines.push(theme.fg("accent", "┗") + theme.fg("accent", "━".repeat(width - 2)) + theme.fg("accent", "┛"));
+
+	return lines.slice(0, height);
+}
+
 // ── Sessions Grid View ──────────────────────────────────
 
 export function renderSessionsGrid(
@@ -691,6 +939,16 @@ export function renderOverlayLegend(
 		);
 	}
 
+	// Chat view
+	if (viewState.mode === "chat") {
+		const parts: string[] = [];
+		parts.push(theme.fg("dim", "Esc") + theme.fg("muted", ":Back"));
+		parts.push(theme.fg("dim", "↑↓") + theme.fg("muted", ":Scroll"));
+		parts.push(theme.fg("dim", "i") + theme.fg("muted", ":Type"));
+		parts.push(theme.fg("dim", "^T") + theme.fg("muted", ":Snapshot"));
+		return truncateToWidth(parts.join(sep), width);
+	}
+
 	// Detail/output view (scrolling with up/down)
 	if (viewState.mode === "detail" || viewState.mode === "output") {
 		const parts: string[] = [];
@@ -710,6 +968,7 @@ export function renderOverlayLegend(
 	parts.push(theme.fg("dim", "Enter") + theme.fg("muted", ":Detail"));
 	parts.push(theme.fg("dim", "o") + theme.fg("muted", ":Output"));
 	parts.push(theme.fg("dim", "s") + theme.fg("muted", ":Grid"));
+	parts.push(theme.fg("dim", "c") + theme.fg("muted", ":Chat"));
 	parts.push(theme.fg("dim", "p") + theme.fg("muted", ":Prompt"));
 	parts.push(theme.fg("dim", "P") + theme.fg("muted", ":All"));
 	if (selectedMember?.status === "running") parts.push(theme.fg("dim", "a") + theme.fg("muted", ":Abort"));

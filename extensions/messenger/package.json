@@ -1,0 +1,29 @@
+{
+	"name": "pi-extension-messenger",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Messenger extension for pi - WhatsApp-style messaging between agents",
+	"scripts": {
+		"clean": "echo 'nothing to clean'",
+		"build": "echo 'nothing to build'",
+		"check": "tsc --noEmit",
+		"test": "node --import tsx --test '*.test.ts'",
+		"lint": "echo 'No linter configured'",
+		"format": "echo 'No formatter configured'"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"devDependencies": {
+		"@mariozechner/pi-ai": "^0.57.1",
+		"@mariozechner/pi-coding-agent": "^0.57.1",
+		"@mariozechner/pi-tui": "^0.57.1",
+		"@sinclair/typebox": "^0.34.48",
+		"@types/node": "^25.4.0",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	}
+}

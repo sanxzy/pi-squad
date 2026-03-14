@@ -208,40 +208,86 @@ export default function SquadExtension(pi: ExtensionAPI) {
 		return {
 			systemPrompt: `You are a coordinator for squad members (specialist background agents).
 
-## Available Squad Members
+## Your Squad Members
 ${memberCatalog}
 
-## How to Work
-- Use the \`squad\` tool to delegate tasks to squad members
-- For parallel work, use \`broadcast\` (same prompt to all) or \`parallel_dispatch\` (different prompts)
-- These actions are **NON-BLOCKING** - they return immediately with a task ID
-- **After dispatching, CONTINUE the conversation with the user - do NOT wait or poll**
-- **When you see "✅ Squad Task Complete" notification, IMMEDIATELY call get_completed_outputs**
-- The notification will wake you up automatically - retrieve outputs right away
+## How It Works
 
-## Critical Rules
-1. **FIRE AND FORGET**: After calling \`broadcast\` or \`parallel_dispatch\`, immediately continue helping the user
-2. **DO NOT POLL**: Never call \`get_status\` repeatedly - wait for the automatic completion notification
-3. **AUTO-RETRIEVE**: When you see "✅ Squad Task Complete", immediately call \`get_completed_outputs\` with the task_id
-4. **ONE CALL PER TASK**: Use the task ID from the dispatch response to retrieve outputs
+You dispatch tasks to squad members. Each member:
+- Has their own "personal messenger" to communicate with OTHER squad members
+- Can send/receive messages with other members (NOT with you)
+- Monitors their inbox and responds to tasks from other members
 
-## Workflow Example
+**You do NOT use the messenger tool.** You only dispatch tasks and collect results.
+
+## Dispatching Tasks
+
+### Send Task to One Member
 \`\`\`
-User: "Research our auth system"
+squad({ action: "dispatch_to", role: "pixlo", prompt: "Implement auth feature" })
+\`\`\`
 
-You: { action: "parallel_dispatch", prompts: {...} }
-→ Returns: Task ID: squad_abc123
+### Send Task to All Members (parallel)
+\`\`\`
+squad({ action: "broadcast", prompt: "Review the codebase for security issues" })
+\`\`\`
 
-You: "I've dispatched the research. While waiting, what else can I help with?"
-[You continue conversation...]
+### Send Different Tasks to Different Members
+\`\`\`
+squad({ 
+  action: "parallel_dispatch", 
+  prompts: {
+    pixlo: "Implement the login feature",
+    camon: "Review the login code",
+    lumen: "Find all auth-related files"
+  }
+})
+\`\`\`
 
-[30s later - automatic notification appears AND WAKES YOU UP]
-✅ Squad Task Complete (28.4s)
-Task ID: squad_abc123
+## Receiving Results
 
-You: [AUTOMATICALLY retrieve outputs]
-{ action: "get_completed_outputs", task_id: "squad_abc123" }
-→ Gets all outputs, presents results
+When members complete tasks, you receive their outputs automatically. Use:
+
+### Check Status
+\`\`\`
+squad({ action: "get_status" })
+\`\`\`
+
+### Get Full Output
+\`\`\`
+squad({ action: "get_output", role: "pixlo" })
+\`\`\`
+
+### Get All Results (after parallel dispatch)
+\`\`\`
+squad({ action: "get_completed_outputs", task_id: "squad_abc123" })
+\`\`\`
+
+## Important Rules
+
+1. **DISPATCH don't message**: Use \`squad\` tool, NOT \`messenger\`
+2. **NON-BLOCKING**: After dispatch, continue helping user - don't wait
+3. **AUTO-NOTIFY**: You'll be notified when tasks complete
+4. **CHECK RESULTS**: Use \`get_output\` or \`get_completed_outputs\` to retrieve results
+
+## Example Workflow
+\`\`\`
+User: "Build auth and get it reviewed"
+
+You: [Dispatch to Pixlo for implementation]
+   squad({ action: "dispatch_to", role: "pixlo", prompt: "Implement auth system in /src/auth" })
+
+You: [Dispatch to Camon for review]  
+   squad({ action: "dispatch_to", role: "camon", prompt: "Review auth code at /src/auth" })
+
+You: [Continue with user - DON'T wait!]
+
+[Later - notification appears]
+✅ Squad Task Complete
+
+You: [Get results]
+   squad({ action: "get_output", role: "pixlo" })
+   squad({ action: "get_output", role: "camon" })
 \`\`\`
 
 ## Recent Results (if any)
@@ -618,9 +664,35 @@ ${hasRecentResults ? resultSummary : "No recent results"}
 						if (role === "all") state.manager?.abortAll();
 						else state.manager?.abort(role);
 					},
-				};
-				await ctx.ui.custom<string | undefined>(
-					(tui, theme, _keybindings, done) => new SquadOverlay(tui, theme, state.manager!, done, callbacks),
+						onMessage: (role, message) => {
+							const { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } = require("node:fs") as typeof import("node:fs");
+							const { join } = require("node:path") as typeof import("node:path");
+							const timestamp = new Date().toISOString();
+							const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+							const inMsg = JSON.stringify({
+								id: msgId,
+								from: "user",
+								to: role,
+								content: message,
+								timestamp,
+								status: "unread",
+								direction: "incoming",
+							});
+
+							// Append to receiver's messages
+							const receiverDir = join(ctx.cwd, ".pi", "messenger", role);
+							if (!existsSync(receiverDir)) mkdirSync(receiverDir, { recursive: true });
+							const receiverFile = join(receiverDir, "messages.jsonl");
+							let existing = "";
+							if (existsSync(receiverFile)) existing = readFileSync(receiverFile, "utf-8");
+							const tmpFile = receiverFile + ".tmp";
+							writeFileSync(tmpFile, existing + inMsg + "\n", "utf-8");
+							renameSync(tmpFile, receiverFile);
+						},
+					};
+					await ctx.ui.custom<string | undefined>(
+						(tui, theme, _keybindings, done) => new SquadOverlay(tui, theme, state.manager!, ctx.cwd, done, callbacks),
 					{
 						overlay: true,
 						onHandle: (handle) => {
@@ -745,9 +817,35 @@ ${hasRecentResults ? resultSummary : "No recent results"}
 					if (role === "all") state.manager?.abortAll();
 					else state.manager?.abort(role);
 				},
+				onMessage: (role, message) => {
+					const { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } = require("node:fs") as typeof import("node:fs");
+					const { join } = require("node:path") as typeof import("node:path");
+					const timestamp = new Date().toISOString();
+					const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+					const inMsg = JSON.stringify({
+						id: msgId,
+						from: "user",
+						to: role,
+						content: message,
+						timestamp,
+						status: "unread",
+						direction: "incoming",
+					});
+
+					// Append to receiver's messages
+					const receiverDir = join(ctx.cwd, ".pi", "messenger", role);
+					if (!existsSync(receiverDir)) mkdirSync(receiverDir, { recursive: true });
+					const receiverFile = join(receiverDir, "messages.jsonl");
+					let existing = "";
+					if (existsSync(receiverFile)) existing = readFileSync(receiverFile, "utf-8");
+					const tmpFile = receiverFile + ".tmp";
+					writeFileSync(tmpFile, existing + inMsg + "\n", "utf-8");
+					renameSync(tmpFile, receiverFile);
+				},
 			};
 			await ctx.ui.custom<string | undefined>(
-				(tui, theme, _keybindings, done) => new SquadOverlay(tui, theme, state.manager!, done, callbacks),
+				(tui, theme, _keybindings, done) => new SquadOverlay(tui, theme, state.manager!, ctx.cwd, done, callbacks),
 				{
 					overlay: true,
 					onHandle: (handle) => {
